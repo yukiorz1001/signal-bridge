@@ -8,6 +8,7 @@ import android.view.WindowManager;
 import android.widget.TextView;
 import java.io.*;
 import java.net.*;
+import java.util.UUID;
 import org.json.*;
 
 public class MainActivity extends Activity {
@@ -36,7 +37,7 @@ public class MainActivity extends Activity {
     h.post(loop);
   }
 
-  void show() { tv.setText(info + "\n\n" + st); }
+  void show() { tv.setText("v2\n" + info + "\n\n" + st); }
 
   Runnable loop = new Runnable() { public void run() { fetch(); h.postDelayed(this, 1000); } };
 
@@ -55,17 +56,12 @@ public class MainActivity extends Activity {
         if (arr.length() == 0) { ui("表是空的"); return; }
         JSONObject o = arr.getJSONObject(0);
         boolean on = o.optBoolean("on_air", false);
-        Object ci = o.opt("company_id");
-        int cid = 0;
-        if (ci instanceof Number) cid = ((Number) ci).intValue();
-        else if (ci != null && ci != JSONObject.NULL) cid = Integer.decode(ci.toString().trim());
-        String hex = o.optString("data_hex", "");
+        String hex = o.isNull("data_hex") ? "" : o.optString("data_hex", "");
         String mode = o.optString("mode", "");
-        String k = on + "|" + cid + "|" + hex;
-        final int fc = cid;
+        String k = on + "|" + hex;
         runOnUiThread(() -> {
-          info = "on_air: " + on + "\nmode: " + mode + "\ncompany_id: " + fc + "\ndata: " + hex;
-          if (!k.equals(last)) { last = k; apply(on, fc, hex); }
+          info = "on_air: " + on + "\nmode: " + mode + "\ndata: " + hex;
+          if (!k.equals(last)) { last = k; apply(on, hex); }
           show();
         });
       } catch (Exception e) { ui("读表失败: " + e.getMessage()); }
@@ -79,31 +75,27 @@ public class MainActivity extends Activity {
     cb = null;
   }
 
-  void apply(boolean on, int cid, String hex) {
+  static ParcelUuid u16(int v) {
+    return new ParcelUuid(UUID.fromString(String.format("%08x-0000-1000-8000-00805f9b34fb", v & 0xFFFF)));
+  }
+
+  void apply(boolean on, String hex) {
     stopAdv();
     if (!on) { st = "待命中"; return; }
     if (adv == null) return;
-    byte[] d = parse(hex);
+    String x = hex.replaceAll("[^0-9a-fA-F]", "");
+    if (x.length() == 0 || x.length() % 4 != 0) { st = "data 格式不对，要四位一组"; return; }
+    AdvertiseData.Builder db = new AdvertiseData.Builder().setIncludeDeviceName(false).setIncludeTxPowerLevel(false);
+    for (int i = 0; i < x.length(); i += 4) db.addServiceUuid(u16(Integer.parseInt(x.substring(i, i + 4), 16)));
     AdvertiseSettings s = new AdvertiseSettings.Builder()
       .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
       .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
       .setConnectable(false).build();
-    AdvertiseData ad = new AdvertiseData.Builder()
-      .setIncludeDeviceName(false)
-      .addManufacturerData(cid, d).build();
     cb = new AdvertiseCallback() {
-      public void onStartSuccess(AdvertiseSettings x) { st = "正在发送"; show(); }
+      public void onStartSuccess(AdvertiseSettings z) { st = "正在发送"; show(); }
       public void onStartFailure(int code) { st = "发送失败 code=" + code; show(); }
     };
-    try { adv.startAdvertising(s, ad, cb); } catch (SecurityException e) { st = "没给蓝牙权限"; }
-  }
-
-  static byte[] parse(String hex) {
-    String x = hex.replaceAll("[^0-9a-fA-F]", "");
-    if (x.length() % 2 == 1) x = "0" + x;
-    byte[] b = new byte[x.length() / 2];
-    for (int i = 0; i < b.length; i++) b[i] = (byte) Integer.parseInt(x.substring(i * 2, i * 2 + 2), 16);
-    return b;
+    try { adv.startAdvertising(s, db.build(), cb); } catch (SecurityException e) { st = "没给蓝牙权限"; }
   }
 
   @Override protected void onDestroy() { h.removeCallbacks(loop); stopAdv(); super.onDestroy(); }
